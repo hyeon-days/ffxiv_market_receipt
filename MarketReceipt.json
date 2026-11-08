@@ -1,0 +1,14 @@
+{
+  "Author": "hyeon-days",
+  "Name": "Market Receipt",
+  "Punchline": "장터 구매 내역 자동 기록",
+  "Description": "장터(마켓보드)에서 구매한 아이템, 수량, 단가, 세금, 총액을 CSV로 자동 기록하고 게임 안에서 조회합니다.",
+  "InternalName": "MarketReceipt",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "market",
+    "receipt",
+    "purchase"
+  ],
+  "RepoUrl": "https://github.com/hyeon-days/ffxiv_market_receipt"
+}
