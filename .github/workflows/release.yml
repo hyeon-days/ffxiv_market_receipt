@@ -1,8 +1,12 @@
 name: Release
 
+# main에 코드가 올라오거나 Actions 탭에서 수동 실행하면 빌드 후 릴리스를 만든다.
+# 릴리스 태그는 MarketReceipt.csproj의 Version 값(v0.1.0 등)을 따른다.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths-ignore: ["README.md"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -23,10 +27,20 @@ jobs:
           Invoke-WebRequest -Uri https://goatcorp.github.io/dalamud-distrib/latest.zip -OutFile dalamud.zip
           Expand-Archive dalamud.zip -DestinationPath "$env:AppData\XIVLauncher\addon\Hooks\dev"
 
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = ([xml](Get-Content MarketReceipt.csproj)).Project.PropertyGroup.Version | Select-Object -First 1
+          "version=$v" >> $env:GITHUB_OUTPUT
+
       - name: Build
         run: dotnet build -c Release
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
+          make_latest: true
           files: bin/Release/MarketReceipt/latest.zip

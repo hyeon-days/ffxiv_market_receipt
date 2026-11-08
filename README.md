@@ -25,7 +25,7 @@
 ## 새 버전 배포
 
 1. `MarketReceipt.csproj`의 `Version`과 `repo.json`의 `AssemblyVersion`을 같은 값으로 올립니다.
-2. 커밋 후 `v0.1.1` 같은 태그를 푸시하면 깃헙 액션이 빌드해 릴리스에 `latest.zip`을 올립니다.
+2. main에 푸시하면 깃헙 액션이 빌드해 그 버전 번호로 릴리스를 만들고 `latest.zip`을 올립니다.
 
 ## 주의
 
