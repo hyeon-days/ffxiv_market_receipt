@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Dalamud.Game.Command;
 using Dalamud.Game.Network.Structures;
 using Dalamud.Interface.Windowing;
@@ -35,10 +36,21 @@ public sealed class Plugin : IDalamudPlugin
     private readonly MainWindow mainWindow;
 
     internal PurchaseLog PurchaseLog { get; }
+    internal Configuration Config { get; }
 
     public Plugin()
     {
+        this.Config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         this.PurchaseLog = new PurchaseLog(PluginInterface.ConfigDirectory.FullName);
+
+        // CSV를 직접 고쳐 새 라벨을 넣었을 경우에도 목록에 나타나게 맞춘다
+        var missing = this.PurchaseLog.UsedLabels().Except(this.Config.Labels).ToList();
+        if (missing.Count > 0)
+        {
+            this.Config.Labels.AddRange(missing);
+            this.Config.Save();
+        }
+
         this.mainWindow = new MainWindow(this);
         this.windows.AddWindow(this.mainWindow);
 
@@ -63,6 +75,52 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi -= this.mainWindow.Toggle;
         this.windows.RemoveAllWindows();
     }
+
+    // ---- 라벨 관리 ----
+
+    /// <returns>추가에 성공하면 true. 빈 이름이나 중복이면 false.</returns>
+    internal bool AddLabel(string name)
+    {
+        name = name.Trim();
+        if (name.Length == 0 || this.Config.Labels.Contains(name)) return false;
+        this.Config.Labels.Add(name);
+        this.Config.Save();
+        return true;
+    }
+
+    internal bool RenameLabel(string from, string to)
+    {
+        to = to.Trim();
+        if (to.Length == 0 || to == from || this.Config.Labels.Contains(to)) return false;
+        var i = this.Config.Labels.IndexOf(from);
+        if (i < 0) return false;
+
+        this.Config.Labels[i] = to;
+        if (this.Config.AutoLabel == from) this.Config.AutoLabel = to;
+        this.Config.Save();
+        this.PurchaseLog.RenameLabel(from, to);
+        return true;
+    }
+
+    internal void DeleteLabel(string name)
+    {
+        if (!this.Config.Labels.Remove(name)) return;
+        if (this.Config.AutoLabel == name)
+        {
+            this.Config.AutoLabel = "";
+            this.Config.AutoLabelEnabled = false;
+        }
+
+        this.Config.Save();
+        this.PurchaseLog.ClearLabel(name);
+    }
+
+    private string CurrentAutoLabel =>
+        this.Config.AutoLabelEnabled && this.Config.Labels.Contains(this.Config.AutoLabel)
+            ? this.Config.AutoLabel
+            : "";
+
+    // ---- 구매 감지 ----
 
     // 1단계: 구매 버튼을 누른 시점. 가격 정보는 여기에만 있다.
     private void OnPurchaseRequested(IMarketBoardPurchaseHandler req)
@@ -102,15 +160,14 @@ public sealed class Plugin : IDalamudPlugin
             var req = match.Req;
             var name = DataManager.GetExcelSheet<Item>().GetRowOrDefault(req.CatalogId)?.Name.ExtractText()
                        ?? $"#{req.CatalogId}";
-
-            var record = new PurchaseRecord(
-                DateTime.Now, match.World, req.CatalogId, name, req.IsHq,
-                req.ItemQuantity, req.PricePerUnit, req.TotalTax);
+            var label = this.CurrentAutoLabel;
 
             try
             {
-                this.PurchaseLog.Add(record);
-                Chat.Print($"[구매 기록] {name}{(req.IsHq ? " HQ" : "")} x{req.ItemQuantity}, {record.Total:N0}길");
+                var r = this.PurchaseLog.Add(DateTime.Now, label, match.World, req.CatalogId, name, req.IsHq,
+                    req.ItemQuantity, req.PricePerUnit, req.TotalTax);
+                var tag = label.Length > 0 ? $" [{label}]" : "";
+                Chat.Print($"[구매 기록]{tag} {name}{(req.IsHq ? " HQ" : "")} x{req.ItemQuantity}, {r.Total:N0}길");
             }
             catch (Exception e)
             {

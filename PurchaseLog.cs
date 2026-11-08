@@ -8,7 +8,9 @@ using System.Text;
 namespace MarketReceipt;
 
 public sealed record PurchaseRecord(
+    long Id,
     DateTime Time,
+    string Label,
     string World,
     uint ItemId,
     string ItemName,
@@ -20,15 +22,26 @@ public sealed record PurchaseRecord(
     public long Total => (long)UnitPrice * Quantity + Tax;
 }
 
-/// <summary>구매 기록을 CSV 파일에 누적 저장하고 메모리에 들고 있는다.</summary>
+/// <summary>
+/// 구매 기록을 CSV 파일 하나에 저장한다.
+/// 새 구매는 끝에 한 줄 덧붙이고, 라벨 변경처럼 과거 기록을 고칠 때는 파일 전체를 다시 쓴다.
+/// </summary>
 public sealed class PurchaseLog
 {
-    private const string Header = "일시,서버,아이템ID,아이템,HQ,수량,단가,세금,총액";
+    private const string Header = "ID,일시,라벨,서버,아이템ID,아이템,HQ,수량,단가,세금,총액";
+    private const string LegacyHeader = "일시,서버,아이템ID,아이템,HQ,수량,단가,세금,총액";
+    private const string TimeFormat = "yyyy-MM-dd HH:mm:ss";
+
+    private static readonly Encoding Utf8Bom = new UTF8Encoding(true);
 
     private readonly object gate = new();
     private readonly List<PurchaseRecord> records = new();
+    private long nextId = 1;
 
     public string FilePath { get; }
+
+    /// <summary>기록이 바뀔 때마다 증가한다. 화면 쪽 캐시 무효화에 쓴다.</summary>
+    public int Version { get; private set; }
 
     public PurchaseLog(string directory)
     {
@@ -42,51 +55,132 @@ public sealed class PurchaseLog
         lock (this.gate) return this.records.ToList();
     }
 
-    public void Add(PurchaseRecord r)
+    public IReadOnlyCollection<string> UsedLabels()
+    {
+        lock (this.gate)
+            return this.records.Select(r => r.Label).Where(l => l.Length > 0).Distinct().ToList();
+    }
+
+    public PurchaseRecord Add(DateTime time, string label, string world, uint itemId, string itemName,
+        bool isHq, uint quantity, uint unitPrice, uint tax)
     {
         lock (this.gate)
         {
+            var r = new PurchaseRecord(this.nextId++, time, label, world, itemId, itemName, isHq, quantity, unitPrice, tax);
             this.records.Add(r);
             var isNew = !File.Exists(this.FilePath);
-            // 엑셀에서 한글이 깨지지 않도록 UTF-8 BOM으로 저장
-            using var w = new StreamWriter(this.FilePath, append: true, new UTF8Encoding(true));
-            if (isNew) w.WriteLine(Header);
-            w.WriteLine(string.Join(",",
-                r.Time.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
-                Escape(r.World),
-                r.ItemId,
-                Escape(r.ItemName),
-                r.IsHq ? "Y" : "N",
-                r.Quantity,
-                r.UnitPrice,
-                r.Tax,
-                r.Total));
+            using (var w = new StreamWriter(this.FilePath, append: true, Utf8Bom))
+            {
+                if (isNew) w.WriteLine(Header);
+                w.WriteLine(ToLine(r));
+            }
+
+            this.Version++;
+            return r;
         }
+    }
+
+    public void SetLabel(IReadOnlyCollection<long> ids, string label)
+    {
+        if (ids.Count == 0) return;
+        var set = ids.ToHashSet();
+        this.Mutate(r => set.Contains(r.Id) ? r with { Label = label } : r);
+    }
+
+    public void RenameLabel(string from, string to) =>
+        this.Mutate(r => r.Label == from ? r with { Label = to } : r);
+
+    public void ClearLabel(string label) =>
+        this.Mutate(r => r.Label == label ? r with { Label = "" } : r);
+
+    private void Mutate(Func<PurchaseRecord, PurchaseRecord> change)
+    {
+        lock (this.gate)
+        {
+            var changed = false;
+            for (var i = 0; i < this.records.Count; i++)
+            {
+                var updated = change(this.records[i]);
+                if (!ReferenceEquals(updated, this.records[i])) changed = true;
+                this.records[i] = updated;
+            }
+
+            if (!changed) return;
+            this.Rewrite();
+            this.Version++;
+        }
+    }
+
+    // 임시 파일에 다 쓴 뒤 바꿔치기해서, 쓰는 도중 꺼져도 기존 파일이 깨지지 않게 한다.
+    private void Rewrite()
+    {
+        var tmp = this.FilePath + ".tmp";
+        using (var w = new StreamWriter(tmp, append: false, Utf8Bom))
+        {
+            w.WriteLine(Header);
+            foreach (var r in this.records) w.WriteLine(ToLine(r));
+        }
+
+        File.Move(tmp, this.FilePath, overwrite: true);
     }
 
     private void Load()
     {
         if (!File.Exists(this.FilePath)) return;
-        foreach (var line in File.ReadLines(this.FilePath, Encoding.UTF8).Skip(1))
+
+        var lines = File.ReadAllLines(this.FilePath, Encoding.UTF8);
+        if (lines.Length == 0) return;
+        var legacy = lines[0].TrimStart('﻿') == LegacyHeader;
+
+        foreach (var line in lines.Skip(1))
         {
             var c = Split(line);
-            if (c.Count < 8) continue;
             try
             {
-                this.records.Add(new PurchaseRecord(
-                    DateTime.ParseExact(c[0], "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
-                    c[1], uint.Parse(c[2]), c[3], c[4] == "Y",
-                    uint.Parse(c[5]), uint.Parse(c[6]), uint.Parse(c[7])));
+                if (legacy && c.Count >= 8)
+                {
+                    // 0.1.0 형식: ID와 라벨이 없다
+                    this.records.Add(new PurchaseRecord(this.nextId++,
+                        ParseTime(c[0]), "", c[1], uint.Parse(c[2]), c[3], c[4] == "Y",
+                        uint.Parse(c[5]), uint.Parse(c[6]), uint.Parse(c[7])));
+                }
+                else if (!legacy && c.Count >= 10)
+                {
+                    var id = long.Parse(c[0]);
+                    this.records.Add(new PurchaseRecord(id,
+                        ParseTime(c[1]), c[2], c[3], uint.Parse(c[4]), c[5], c[6] == "Y",
+                        uint.Parse(c[7]), uint.Parse(c[8]), uint.Parse(c[9])));
+                    this.nextId = Math.Max(this.nextId, id + 1);
+                }
             }
             catch (FormatException)
             {
                 // 손으로 편집하다 깨진 줄은 건너뛴다
             }
         }
+
+        // 예전 형식이면 새 형식으로 한 번 변환해 저장
+        if (legacy) this.Rewrite();
     }
 
+    private static DateTime ParseTime(string s) =>
+        DateTime.ParseExact(s, TimeFormat, CultureInfo.InvariantCulture);
+
+    private static string ToLine(PurchaseRecord r) => string.Join(",",
+        r.Id,
+        r.Time.ToString(TimeFormat, CultureInfo.InvariantCulture),
+        Escape(r.Label),
+        Escape(r.World),
+        r.ItemId,
+        Escape(r.ItemName),
+        r.IsHq ? "Y" : "N",
+        r.Quantity,
+        r.UnitPrice,
+        r.Tax,
+        r.Total);
+
     private static string Escape(string s) =>
-        s.IndexOfAny(new[] { ',', '"', '\n' }) >= 0 ? "\"" + s.Replace("\"", "\"\"") + "\"" : s;
+        s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0 ? "\"" + s.Replace("\"", "\"\"") + "\"" : s;
 
     private static List<string> Split(string line)
     {
@@ -106,6 +200,7 @@ public sealed class PurchaseLog
             else if (ch == ',') { result.Add(sb.ToString()); sb.Clear(); }
             else sb.Append(ch);
         }
+
         result.Add(sb.ToString());
         return result;
     }
