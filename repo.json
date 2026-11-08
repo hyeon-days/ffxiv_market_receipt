@@ -12,7 +12,7 @@
       "purchase"
     ],
     "RepoUrl": "https://github.com/hyeon-days/ffxiv_market_receipt",
-    "AssemblyVersion": "0.3.1.0",
+    "AssemblyVersion": "0.3.3.0",
     "DalamudApiLevel": 15,
     "DownloadLinkInstall": "https://github.com/hyeon-days/ffxiv_market_receipt/releases/latest/download/latest.zip",
     "DownloadLinkUpdate": "https://github.com/hyeon-days/ffxiv_market_receipt/releases/latest/download/latest.zip",
