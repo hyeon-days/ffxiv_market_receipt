@@ -26,6 +26,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IChatGui Chat { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
+    [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
 
     private sealed record Pending(DateTime At, string World, IMarketBoardPurchaseHandler Req);
 
@@ -34,6 +35,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly WindowSystem windows = new("MarketReceipt");
     private readonly MainWindow mainWindow;
+    internal HelpWindow HelpWindow { get; }
 
     internal PurchaseLog PurchaseLog { get; }
     internal Configuration Config { get; }
@@ -45,14 +47,15 @@ public sealed class Plugin : IDalamudPlugin
 
         // CSV를 직접 고쳐 새 라벨을 넣었을 경우에도 목록에 나타나게 맞춘다
         var missing = this.PurchaseLog.UsedLabels().Except(this.Config.Labels).ToList();
-        if (missing.Count > 0)
-        {
-            this.Config.Labels.AddRange(missing);
-            this.Config.Save();
-        }
+        this.Config.Labels.AddRange(missing);
+        foreach (var l in this.Config.Labels)
+            this.Config.LabelColorIndex.TryAdd(l, this.NextColorIndex());
+        this.Config.Save();
 
+        this.HelpWindow = new HelpWindow();
         this.mainWindow = new MainWindow(this);
         this.windows.AddWindow(this.mainWindow);
+        this.windows.AddWindow(this.HelpWindow);
 
         MarketBoard.PurchaseRequested += this.OnPurchaseRequested;
         MarketBoard.ItemPurchased += this.OnItemPurchased;
@@ -84,9 +87,25 @@ public sealed class Plugin : IDalamudPlugin
         name = name.Trim();
         if (name.Length == 0 || this.Config.Labels.Contains(name)) return false;
         this.Config.Labels.Add(name);
+        this.Config.LabelColorIndex[name] = this.NextColorIndex();
         this.Config.Save();
         return true;
     }
+
+    internal int ColorOf(string label) =>
+        this.Config.LabelColorIndex.TryGetValue(label, out var c) ? c : 0;
+
+    internal void CycleLabelColor(string label)
+    {
+        this.Config.LabelColorIndex[label] = LabelColors.Wrap(this.ColorOf(label) + 1);
+        this.Config.Save();
+    }
+
+    // 지금 가장 적게 쓰인 색을 고른다
+    private int NextColorIndex() =>
+        Enumerable.Range(0, LabelColors.Palette.Length)
+            .OrderBy(i => this.Config.LabelColorIndex.Values.Count(v => v == i))
+            .First();
 
     internal bool RenameLabel(string from, string to)
     {
@@ -96,6 +115,8 @@ public sealed class Plugin : IDalamudPlugin
         if (i < 0) return false;
 
         this.Config.Labels[i] = to;
+        this.Config.LabelColorIndex[to] = this.ColorOf(from);
+        this.Config.LabelColorIndex.Remove(from);
         if (this.Config.AutoLabel == from) this.Config.AutoLabel = to;
         this.Config.Save();
         this.PurchaseLog.RenameLabel(from, to);
@@ -105,6 +126,7 @@ public sealed class Plugin : IDalamudPlugin
     internal void DeleteLabel(string name)
     {
         if (!this.Config.Labels.Remove(name)) return;
+        this.Config.LabelColorIndex.Remove(name);
         if (this.Config.AutoLabel == name)
         {
             this.Config.AutoLabel = "";
