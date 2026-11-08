@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Numerics;
+using System.Threading.Tasks;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Components;
@@ -50,6 +51,13 @@ public sealed class MainWindow : Window
     private string? pendingDelete;
     private readonly Dictionary<string, string> renameBuffers = new();
 
+    // 시트 내보내기
+    private string sheetUrlBuffer = "";
+    private string sheetMessage = "";
+    private bool sheetMessageIsError;
+    private volatile bool exporting;
+    private Vector2 sheetAnchor;
+
     // 아이템 번호 → 아이콘 번호
     private readonly Dictionary<uint, uint> iconIds = new();
 
@@ -59,7 +67,7 @@ public sealed class MainWindow : Window
     public MainWindow(Plugin plugin) : base("장터 구매 기록###MarketReceiptMain")
     {
         this.plugin = plugin;
-        this.SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(600, 320) };
+        this.SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(680, 320) };
         this.TitleBarButtons.Add(new TitleBarButton
         {
             Icon = FontAwesomeIcon.InfoCircle,
@@ -187,7 +195,7 @@ public sealed class MainWindow : Window
         if (ImGui.Button(autoText)) ImGui.OpenPopup("autoMenu");
         if (autoOn) ImGui.PopStyleColor(3);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("켜두면 이후 구매부터 선택한 라벨이 자동으로 붙습니다.");
+            ImGui.SetTooltip("이후 구매부터 선택한 라벨로 자동 분류됩니다.");
 
         if (ImGui.BeginPopup("autoMenu"))
         {
@@ -331,7 +339,6 @@ public sealed class MainWindow : Window
         if (active) ImGui.PopStyleColor();
 
         var clicked = ImGui.IsItemClicked();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("눌러서 라벨로 거르기");
 
         // 칸 오른쪽 끝에 필터 아이콘
         var max = ImGui.GetItemRectMax();
@@ -348,7 +355,7 @@ public sealed class MainWindow : Window
         if (ImGui.BeginPopup("labelFilterPopup"))
         {
             if (ImGui.Selectable("모든 라벨", this.labelFilter == null)) this.labelFilter = null;
-            if (ImGui.Selectable("라벨 없음", this.labelFilter == "")) this.labelFilter = "";
+            if (ImGui.Selectable("없음", this.labelFilter == "")) this.labelFilter = "";
             if (this.Config.Labels.Count > 0) ImGui.Separator();
             foreach (var l in this.Config.Labels)
                 if (this.TagSelectable($"##lf_{l}", l, this.labelFilter == l)) this.labelFilter = l;
@@ -425,6 +432,20 @@ public sealed class MainWindow : Window
             this.assignError = false;
         }
 
+        ImGui.SameLine();
+        var exportText = this.exporting ? "내보내는 중…" : "시트로 내보내기";
+        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.FileExport, exportText) && !this.exporting)
+        {
+            if (SheetExporter.Validate(this.Config.SheetUrl) != null)
+            {
+                this.OpenSheetConnect("먼저 스프레드시트를 연결하세요.", true);
+            }
+            else
+            {
+                this.StartExport();
+            }
+        }
+
         if (this.assignError)
         {
             ImGui.SameLine();
@@ -435,7 +456,45 @@ public sealed class MainWindow : Window
         }
     }
 
-    // ---- 맨 아래: 라벨 관리, CSV, 합계 (항상 고정) ----
+    private void StartExport()
+    {
+        var rows = this.view
+            .Where(r => this.selected.Contains(r.Id))
+            .OrderBy(r => r.Time)
+            .Select(r => SheetExporter.ToRow(r, this.CategoryOf(r.ItemId)))
+            .ToList();
+        if (rows.Count == 0) return;
+
+        var url = this.Config.SheetUrl;
+        this.exporting = true;
+        Task.Run(async () =>
+        {
+            var res = await SheetExporter.SendAsync(url, rows);
+            await Plugin.Framework.RunOnFrameworkThread(() =>
+            {
+                this.exporting = false;
+                if (res.Ok)
+                {
+                    var skipped = res.Skipped > 0 ? $" 이미 있던 {res.Skipped:N0}건은 건너뛰었습니다." : "";
+                    Plugin.Chat.Print($"[구매 기록] 스프레드시트로 {res.Added:N0}건 내보냈습니다.{skipped}");
+                }
+                else
+                {
+                    Plugin.Chat.PrintError($"[구매 기록] 스프레드시트 내보내기 실패: {res.Error}");
+                }
+            });
+        });
+    }
+
+    private void OpenSheetConnect(string message, bool isError)
+    {
+        this.sheetUrlBuffer = this.Config.SheetUrl;
+        this.sheetMessage = message;
+        this.sheetMessageIsError = isError;
+        ImGui.OpenPopup("sheetConnect");
+    }
+
+    // ---- 맨 아래: 라벨 관리, CSV, 시트 연결, 합계 (항상 고정) ----
 
     private void DrawFooter()
     {
@@ -454,6 +513,12 @@ public sealed class MainWindow : Window
             var dir = System.IO.Path.GetDirectoryName(this.plugin.PurchaseLog.FilePath)!;
             Process.Start(new ProcessStartInfo { FileName = dir, UseShellExecute = true });
         }
+
+        ImGui.SameLine();
+        var connected = SheetExporter.Validate(this.Config.SheetUrl) == null;
+        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.Link, connected ? "시트 연결됨" : "시트 연결"))
+            this.OpenSheetConnect("", false);
+        this.sheetAnchor = ImGui.GetItemRectMin();
 
         // 선택한 게 있으면 선택한 기록의 합계, 없으면 지금 걸러진 전체 합계
         var hasSelection = this.selected.Count > 0;
@@ -482,6 +547,87 @@ public sealed class MainWindow : Window
             this.DrawLabelManager();
             ImGui.EndPopup();
         }
+
+        if (ImGui.IsPopupOpen("sheetConnect"))
+            ImGui.SetNextWindowPos(this.sheetAnchor - new Vector2(0, ImGui.GetStyle().ItemSpacing.Y), ImGuiCond.Always, new Vector2(0, 1));
+        if (ImGui.BeginPopup("sheetConnect"))
+        {
+            this.DrawSheetConnect();
+            ImGui.EndPopup();
+        }
+    }
+
+    private void DrawSheetConnect()
+    {
+        var scale = ImGuiHelpers.GlobalScale;
+        ImGui.TextUnformatted("스프레드시트 연결");
+        ImGui.Separator();
+
+        ImGui.PushTextWrapPos(400 * scale);
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.80f, 0.80f, 0.80f, 1f));
+        ImGui.TextWrapped("구글 시트에 붙인 Apps Script의 웹 앱 주소를 넣으면, 선택한 기록을 그 시트로 내보낼 수 있습니다. 이미 보낸 기록은 다시 보내도 중복으로 쌓이지 않습니다.");
+        ImGui.Spacing();
+        ImGui.TextWrapped("1. 기록을 받을 구글 시트를 열고 메뉴의 확장 프로그램 → Apps Script를 엽니다.");
+        ImGui.TextWrapped("2. 아래 '스크립트 복사'를 눌러 편집기 내용을 지우고 붙여넣은 뒤 저장합니다.");
+        ImGui.TextWrapped("3. 배포 → 새 배포 → 유형 '웹 앱'을 고르고, 실행 사용자 '나', 액세스 권한 '모든 사용자'로 배포합니다. 처음 한 번은 구글 계정 권한 허용이 필요합니다.");
+        ImGui.TextWrapped("4. 배포가 끝나면 나오는 웹 앱 URL(…/exec)을 아래 칸에 붙여넣고 저장합니다.");
+        ImGui.PopStyleColor();
+        ImGui.Spacing();
+
+        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.Copy, "스크립트 복사"))
+        {
+            ImGui.SetClipboardText(SheetExporter.AppsScript);
+            this.sheetMessage = "스크립트를 복사했습니다. Apps Script 편집기에 붙여넣으세요.";
+            this.sheetMessageIsError = false;
+        }
+
+        ImGui.Spacing();
+        ImGui.SetNextItemWidth(400 * scale);
+        var enter = ImGui.InputTextWithHint("##sheetUrl", "https://script.google.com/macros/s/…/exec", ref this.sheetUrlBuffer, 512,
+            ImGuiInputTextFlags.EnterReturnsTrue);
+        if (ImGui.IsItemEdited()) this.sheetMessage = "";
+
+        var save = ImGui.Button("저장");
+        if (enter || save)
+        {
+            var problem = SheetExporter.Validate(this.sheetUrlBuffer);
+            if (problem != null)
+            {
+                this.sheetMessage = problem;
+                this.sheetMessageIsError = true;
+            }
+            else
+            {
+                this.Config.SheetUrl = this.sheetUrlBuffer.Trim();
+                this.Config.Save();
+                this.sheetMessage = "저장했습니다. 기록을 선택하고 '시트로 내보내기'를 누르면 됩니다.";
+                this.sheetMessageIsError = false;
+            }
+        }
+
+        if (this.Config.SheetUrl.Length > 0)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("연결 해제"))
+            {
+                this.Config.SheetUrl = "";
+                this.Config.Save();
+                this.sheetUrlBuffer = "";
+                this.sheetMessage = "연결을 해제했습니다.";
+                this.sheetMessageIsError = false;
+            }
+        }
+
+        if (this.sheetMessage.Length > 0)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, this.sheetMessageIsError ? Danger : AccentHover);
+            ImGui.TextWrapped(this.sheetMessage);
+            ImGui.PopStyleColor();
+        }
+
+        ImGui.Spacing();
+        this.MutedText("이 주소를 아는 사람은 누구나 시트에 줄을 추가할 수 있으니 공유하지 마세요.");
+        ImGui.PopTextWrapPos();
     }
 
     private void DrawLabelManager()

@@ -20,5 +20,8 @@ public sealed class Configuration : IPluginConfiguration
 
     public string AutoLabel { get; set; } = "";
 
+    /// <summary>구글 시트에 배포한 Apps Script 웹 앱 주소. 비어 있으면 시트 내보내기를 쓰지 않는다.</summary>
+    public string SheetUrl { get; set; } = "";
+
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }
