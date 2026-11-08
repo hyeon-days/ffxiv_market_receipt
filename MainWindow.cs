@@ -16,6 +16,7 @@ namespace MarketReceipt;
 public sealed class MainWindow : Window
 {
     private static readonly string[] Ranges = { "오늘", "최근 7일", "최근 30일", "전체" };
+    private static readonly string[] Sorts = { "최신순", "오래된순", "총액 높은순", "아이템 이름순", "종류별", "라벨별" };
 
     private static readonly Vector4 AccentBg = new(0.26f, 0.47f, 0.85f, 1f);
     private static readonly Vector4 AccentHover = new(0.33f, 0.55f, 0.95f, 1f);
@@ -31,11 +32,12 @@ public sealed class MainWindow : Window
     private int range = 1;
     private string? labelFilter; // null: 모든 라벨, "": 라벨 없음
     private string search = "";
+    private int sort; // Sorts 인덱스, 0이 최신순
 
     // 화면용 캐시. 기록이나 필터가 바뀔 때만 다시 계산한다.
     private List<PurchaseRecord> view = new();
     private long viewSum;
-    private (int Version, int Range, string? Label, string Search, DateTime Day) viewKey;
+    private (int Version, int Range, string? Label, string Search, int Sort, DateTime Day) viewKey;
 
     // 선택과 라벨링
     private readonly HashSet<long> selected = new();
@@ -50,6 +52,9 @@ public sealed class MainWindow : Window
 
     // 아이템 번호 → 아이콘 번호
     private readonly Dictionary<uint, uint> iconIds = new();
+
+    // 아이템 번호 → 분류 이름(무기, 가구 등)
+    private readonly Dictionary<uint, string> categories = new();
 
     public MainWindow(Plugin plugin) : base("장터 구매 기록###MarketReceiptMain")
     {
@@ -86,7 +91,7 @@ public sealed class MainWindow : Window
 
     private void RefreshView()
     {
-        var key = (this.plugin.PurchaseLog.Version, this.range, this.labelFilter, this.search, DateTime.Today);
+        var key = (this.plugin.PurchaseLog.Version, this.range, this.labelFilter, this.search, this.sort, DateTime.Today);
         if (key == this.viewKey) return;
         this.viewKey = key;
 
@@ -98,15 +103,40 @@ public sealed class MainWindow : Window
             _ => DateTime.MinValue,
         };
 
-        this.view = this.plugin.PurchaseLog.Snapshot()
+        var rows = this.plugin.PurchaseLog.Snapshot()
             .Where(r => r.Time >= since)
             .Where(r => this.labelFilter == null || r.Label == this.labelFilter)
-            .Where(r => this.search.Length == 0 || r.ItemName.Contains(this.search, StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(r => r.Time)
-            .ToList();
+            .Where(r => this.search.Length == 0 || r.ItemName.Contains(this.search, StringComparison.OrdinalIgnoreCase));
+
+        // 라벨별 정렬은 '라벨 관리'의 순서를 따르고, 라벨 없는 기록은 맨 뒤로 보낸다
+        int LabelOrder(PurchaseRecord r)
+        {
+            var i = this.Config.Labels.IndexOf(r.Label);
+            return i < 0 ? int.MaxValue : i;
+        }
+
+        this.view = (this.sort switch
+        {
+            1 => rows.OrderBy(r => r.Time),
+            2 => rows.OrderByDescending(r => r.Total).ThenByDescending(r => r.Time),
+            3 => rows.OrderBy(r => r.ItemName, StringComparer.CurrentCulture).ThenByDescending(r => r.Time),
+            4 => rows.OrderBy(r => this.CategoryOf(r.ItemId), StringComparer.CurrentCulture)
+                     .ThenBy(r => r.ItemName, StringComparer.CurrentCulture).ThenByDescending(r => r.Time),
+            5 => rows.OrderBy(LabelOrder).ThenByDescending(r => r.Time),
+            _ => rows.OrderByDescending(r => r.Time),
+        }).ToList();
         this.viewSum = this.view.Sum(r => r.Total);
 
         this.selected.IntersectWith(this.view.Select(r => r.Id).ToHashSet());
+    }
+
+    private string CategoryOf(uint itemId)
+    {
+        if (this.categories.TryGetValue(itemId, out var name)) return name;
+        name = Plugin.DataManager.GetExcelSheet<Item>().GetRowOrDefault(itemId)?
+            .ItemUICategory.ValueNullable?.Name.ExtractText() ?? "";
+        this.categories[itemId] = name;
+        return name;
     }
 
     private uint IconOf(uint itemId)
@@ -127,16 +157,16 @@ public sealed class MainWindow : Window
         ImGui.Combo("##range", ref this.range, Ranges);
 
         ImGui.SameLine();
-        ImGui.SetNextItemWidth(130 * scale);
-        var preview = this.labelFilter switch { null => "모든 라벨", "" => "라벨 없음", _ => this.labelFilter };
-        if (ImGui.BeginCombo("##labelFilter", preview))
+        ImGui.SetNextItemWidth(140 * scale);
+        if (ImGui.BeginCombo("##sort", $"정렬: {Sorts[this.sort]}"))
         {
-            if (ImGui.Selectable("모든 라벨", this.labelFilter == null)) this.labelFilter = null;
-            if (ImGui.Selectable("라벨 없음", this.labelFilter == "")) this.labelFilter = "";
-            foreach (var l in this.Config.Labels)
-                if (ImGui.Selectable(l, this.labelFilter == l)) this.labelFilter = l;
+            for (var i = 0; i < Sorts.Length; i++)
+                if (ImGui.Selectable(Sorts[i], this.sort == i)) this.sort = i;
             ImGui.EndCombo();
         }
+
+        if (ImGui.IsItemHovered() && this.sort == 4)
+            ImGui.SetTooltip("무기, 가구, 재료 같은 게임 아이템 분류 순으로 묶어 보여줍니다.");
 
         var autoOn = this.Config.AutoLabelEnabled && this.Config.Labels.Contains(this.Config.AutoLabel);
         var autoText = autoOn ? $"자동 라벨링: {this.Config.AutoLabel}" : "자동 라벨링: 끔";
@@ -196,7 +226,7 @@ public sealed class MainWindow : Window
         ImGui.TableSetupColumn("##sel", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight());
         ImGui.TableSetupColumn("일시", ImGuiTableColumnFlags.WidthFixed, ImGui.CalcTextSize("00-00 00:00").X);
         ImGui.TableSetupColumn("아이템", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("라벨", ImGuiTableColumnFlags.WidthFixed, 100 * scale);
+        ImGui.TableSetupColumn("라벨", ImGuiTableColumnFlags.WidthFixed, 120 * scale);
         ImGui.TableSetupColumn("수량", ImGuiTableColumnFlags.WidthFixed, 40 * scale);
         ImGui.TableSetupColumn("단가", ImGuiTableColumnFlags.WidthFixed, 72 * scale);
         ImGui.TableSetupColumn("총액", ImGuiTableColumnFlags.WidthFixed, 80 * scale);
@@ -216,7 +246,8 @@ public sealed class MainWindow : Window
         for (var i = 0; i < headers.Length; i++)
         {
             ImGui.TableSetColumnIndex(i + 1);
-            ImGui.TableHeader(headers[i]);
+            if (i == 2) this.DrawLabelHeader();
+            else ImGui.TableHeader(headers[i]);
         }
 
         if (this.view.Count == 0)
@@ -271,7 +302,7 @@ public sealed class MainWindow : Window
                 ImGui.AlignTextToFramePadding();
                 ImGui.TextUnformatted(r.IsHq ? r.ItemName + " (HQ)" : r.ItemName);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip($"{r.ItemName}{(r.IsHq ? " (HQ)" : "")}\n서버: {r.World}\n세금: {r.Tax:N0}길");
+                    ImGui.SetTooltip($"{r.ItemName}{(r.IsHq ? " (HQ)" : "")}\n분류: {this.CategoryOf(r.ItemId)}\n서버: {r.World}\n세금: {r.Tax:N0}길");
 
                 ImGui.TableNextColumn();
                 ImGui.AlignTextToFramePadding();
@@ -287,6 +318,42 @@ public sealed class MainWindow : Window
         clipper.End();
         clipper.Destroy();
         ImGui.EndTable();
+    }
+
+    // 라벨 칸 머리: 누르면 라벨로 거르는 목록이 열리고, 걸러진 상태면 색과 이름으로 표시한다
+    private void DrawLabelHeader()
+    {
+        var active = this.labelFilter != null;
+        var title = this.labelFilter switch { null => "라벨", "" => "라벨: 없음", _ => $"라벨: {this.labelFilter}" };
+
+        if (active) ImGui.PushStyleColor(ImGuiCol.Text, AccentHover);
+        ImGui.TableHeader($"{title}##labelHeader");
+        if (active) ImGui.PopStyleColor();
+
+        var clicked = ImGui.IsItemClicked();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("눌러서 라벨로 거르기");
+
+        // 칸 오른쪽 끝에 필터 아이콘
+        var max = ImGui.GetItemRectMax();
+        var min = ImGui.GetItemRectMin();
+        ImGui.PushFont(UiBuilder.IconFont);
+        var icon = FontAwesomeIcon.Filter.ToIconString();
+        var iconSize = ImGui.CalcTextSize(icon);
+        ImGui.GetWindowDrawList().AddText(
+            new Vector2(max.X - iconSize.X - 4 * ImGuiHelpers.GlobalScale, min.Y + ((max.Y - min.Y - iconSize.Y) / 2)),
+            ImGui.GetColorU32(active ? AccentHover : Muted), icon);
+        ImGui.PopFont();
+
+        if (clicked) ImGui.OpenPopup("labelFilterPopup");
+        if (ImGui.BeginPopup("labelFilterPopup"))
+        {
+            if (ImGui.Selectable("모든 라벨", this.labelFilter == null)) this.labelFilter = null;
+            if (ImGui.Selectable("라벨 없음", this.labelFilter == "")) this.labelFilter = "";
+            if (this.Config.Labels.Count > 0) ImGui.Separator();
+            foreach (var l in this.Config.Labels)
+                if (this.TagSelectable($"##lf_{l}", l, this.labelFilter == l)) this.labelFilter = l;
+            ImGui.EndPopup();
+        }
     }
 
     private void Toggle(long id, bool on)
@@ -388,11 +455,24 @@ public sealed class MainWindow : Window
             Process.Start(new ProcessStartInfo { FileName = dir, UseShellExecute = true });
         }
 
-        var sum = $"{this.view.Count:N0}건 · 합계 {this.viewSum:N0}길";
+        // 선택한 게 있으면 선택한 기록의 합계, 없으면 지금 걸러진 전체 합계
+        var hasSelection = this.selected.Count > 0;
+        var sum = hasSelection
+            ? $"선택 {this.selected.Count:N0}건 · 합계 {this.view.Where(r => this.selected.Contains(r.Id)).Sum(r => r.Total):N0}길"
+            : $"{this.view.Count:N0}건 · 합계 {this.viewSum:N0}길";
         ImGui.SameLine();
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Math.Max(0, ImGui.GetContentRegionAvail().X - ImGui.CalcTextSize(sum).X));
         ImGui.AlignTextToFramePadding();
-        this.MutedText(sum);
+        if (hasSelection)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, AccentHover);
+            ImGui.TextUnformatted(sum);
+            ImGui.PopStyleColor();
+        }
+        else
+        {
+            this.MutedText(sum);
+        }
 
         // 라벨 관리는 버튼 위쪽으로 열린다
         if (ImGui.IsPopupOpen("labelManager"))
