@@ -169,7 +169,7 @@ public sealed class MainWindow : Window
             ImGui.SetTooltip("무기, 가구, 재료 같은 게임 아이템 분류 순으로 묶어 보여줍니다.");
 
         var autoOn = this.Config.AutoLabelEnabled && this.Config.Labels.Contains(this.Config.AutoLabel);
-        var autoText = autoOn ? $"자동 라벨링: {this.Config.AutoLabel}" : "자동 라벨링: 끔";
+        var autoText = autoOn ? $"자동 라벨링: {this.Config.AutoLabel}" : "자동 라벨링: OFF";
         var autoWidth = ImGui.CalcTextSize(autoText).X + ImGui.GetStyle().FramePadding.X * 2;
 
         ImGui.SameLine();
@@ -187,11 +187,11 @@ public sealed class MainWindow : Window
         if (ImGui.Button(autoText)) ImGui.OpenPopup("autoMenu");
         if (autoOn) ImGui.PopStyleColor(3);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("켜두면 이후 장터 구매에 고른 라벨이 자동으로 붙습니다.");
+            ImGui.SetTooltip("켜두면 이후 구매부터 선택한 라벨이 자동으로 붙습니다.");
 
         if (ImGui.BeginPopup("autoMenu"))
         {
-            if (ImGui.Selectable("끔", !autoOn))
+            if (ImGui.Selectable("OFF", !autoOn))
             {
                 this.Config.AutoLabelEnabled = false;
                 this.Config.Save();
@@ -224,8 +224,8 @@ public sealed class MainWindow : Window
         var scale = ImGuiHelpers.GlobalScale;
         ImGui.TableSetupScrollFreeze(0, 1);
         ImGui.TableSetupColumn("##sel", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight());
-        ImGui.TableSetupColumn("일시", ImGuiTableColumnFlags.WidthFixed, ImGui.CalcTextSize("00-00 00:00").X);
         ImGui.TableSetupColumn("아이템", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn("일시", ImGuiTableColumnFlags.WidthFixed, ImGui.CalcTextSize("00-00 00:00").X);
         ImGui.TableSetupColumn("라벨", ImGuiTableColumnFlags.WidthFixed, 120 * scale);
         ImGui.TableSetupColumn("수량", ImGuiTableColumnFlags.WidthFixed, 40 * scale);
         ImGui.TableSetupColumn("단가", ImGuiTableColumnFlags.WidthFixed, 72 * scale);
@@ -242,7 +242,7 @@ public sealed class MainWindow : Window
         }
 
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("지금 보이는 기록 모두 선택");
-        string[] headers = { "일시", "아이템", "라벨", "수량", "단가", "총액" };
+        string[] headers = { "아이템", "일시", "라벨", "수량", "단가", "총액" };
         for (var i = 0; i < headers.Length; i++)
         {
             ImGui.TableSetColumnIndex(i + 1);
@@ -253,7 +253,7 @@ public sealed class MainWindow : Window
         if (this.view.Count == 0)
         {
             ImGui.TableNextRow();
-            ImGui.TableSetColumnIndex(2);
+            ImGui.TableSetColumnIndex(1);
             this.MutedText("조건에 맞는 기록이 없습니다.");
         }
 
@@ -286,10 +286,6 @@ public sealed class MainWindow : Window
                 if (ImGui.Checkbox($"##sel{r.Id}", ref isSelected)) this.Toggle(r.Id, isSelected);
 
                 ImGui.TableNextColumn();
-                ImGui.AlignTextToFramePadding();
-                ImGui.TextUnformatted(r.Time.ToString("MM-dd HH:mm"));
-
-                ImGui.TableNextColumn();
                 var icon = this.IconOf(r.ItemId);
                 if (icon != 0)
                 {
@@ -303,6 +299,10 @@ public sealed class MainWindow : Window
                 ImGui.TextUnformatted(r.IsHq ? r.ItemName + " (HQ)" : r.ItemName);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip($"{r.ItemName}{(r.IsHq ? " (HQ)" : "")}\n분류: {this.CategoryOf(r.ItemId)}\n서버: {r.World}\n세금: {r.Tax:N0}길");
+
+                ImGui.TableNextColumn();
+                ImGui.AlignTextToFramePadding();
+                ImGui.TextUnformatted(r.Time.ToString("MM-dd HH:mm"));
 
                 ImGui.TableNextColumn();
                 ImGui.AlignTextToFramePadding();
