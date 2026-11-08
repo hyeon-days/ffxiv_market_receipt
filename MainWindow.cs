@@ -402,7 +402,7 @@ public sealed class MainWindow : Window
         ImGui.PushStyleColor(ImGuiCol.Button, AccentBg);
         ImGui.PushStyleColor(ImGuiCol.ButtonHovered, AccentHover);
         ImGui.PushStyleColor(ImGuiCol.ButtonActive, AccentHover);
-        var apply = ImGui.Button("라벨링");
+        var apply = ImGui.Button("변경");
         ImGui.PopStyleColor(3);
         if (apply)
         {
