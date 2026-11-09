@@ -52,10 +52,21 @@ internal static class SheetExporter
           }
         }
 
+        function doGet() {
+          return reply({ ok: true, message: 'Market Receipt 연결 확인 완료' });
+        }
+
         function reply(obj) {
           return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
         }
         """;
+
+    /// <summary>
+    /// 브라우저에 구글 계정이 여러 개 로그인되어 있으면 주소가 …/macros/u/1/s/…/exec 처럼 복사된다.
+    /// /u/숫자 부분은 '그 계정으로 로그인해서 열라'는 뜻이라 로그인 없는 플러그인은 401을 받으므로 떼어낸다.
+    /// </summary>
+    public static string Normalize(string url) =>
+        System.Text.RegularExpressions.Regex.Replace(url.Trim(), @"/macros/u/\d+/s/", "/macros/s/");
 
     /// <returns>주소가 쓸 수 있는 형태면 null, 아니면 사용자에게 보여줄 안내 문구.</returns>
     public static string? Validate(string url)
@@ -96,9 +107,14 @@ internal static class SheetExporter
             var body = JsonSerializer.Serialize(new { rows });
             using var content = new StringContent(body, Encoding.UTF8, "text/plain");
             // Apps Script는 처리 후 결과 주소로 리다이렉트한다. HttpClient가 따라가서 결과 JSON을 받는다.
-            using var res = await Http.PostAsync(url.Trim(), content).ConfigureAwait(false);
+            using var res = await Http.PostAsync(Normalize(url), content).ConfigureAwait(false);
             var text = await res.Content.ReadAsStringAsync().ConfigureAwait(false);
 
+            if ((int)res.StatusCode is 401 or 403)
+                return new Result(false, 0, 0,
+                    "구글이 접근을 막았습니다. Apps Script 배포 관리에서 액세스 권한을 '모든 사용자'로 바꿔 새 버전으로 배포했는지, 회사·학교 계정이 아닌지 확인하세요.");
+            if ((int)res.StatusCode == 404)
+                return new Result(false, 0, 0, "웹 앱을 찾지 못했습니다. 배포가 삭제되었거나 주소가 잘못되었습니다.");
             if (!res.IsSuccessStatusCode)
                 return new Result(false, 0, 0, $"시트 응답 오류 ({(int)res.StatusCode})");
 
