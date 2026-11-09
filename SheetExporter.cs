@@ -20,7 +20,9 @@ internal static class SheetExporter
 
     /// <summary>시트에 붙여넣을 Apps Script. 플러그인의 '스크립트 복사' 버튼이 이 내용을 복사한다.</summary>
     public const string AppsScript = """
+        /** @OnlyCurrentDoc */
         // Market Receipt: 장터 구매 기록을 받아 이 시트에 적는 스크립트
+        // 위 주석 덕분에 구글 권한 요청이 '이 스크립트를 붙인 시트 하나'로 좁혀집니다.
         const SHEET_NAME = '구매 기록';
         const HEADER = ['키', '일시', '라벨', '서버', '분류', '아이템', 'HQ', '수량', '단가', '세금', '총액'];
 

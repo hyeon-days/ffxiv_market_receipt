@@ -56,7 +56,6 @@ public sealed class MainWindow : Window
     private string sheetMessage = "";
     private bool sheetMessageIsError;
     private volatile bool exporting;
-    private volatile bool testing;
     private Vector2 sheetAnchor;
 
     // 아이템 번호 → 아이콘 번호
@@ -487,24 +486,6 @@ public sealed class MainWindow : Window
         });
     }
 
-    // 빈 목록을 보내 시트까지 닿는지만 확인한다. 시트에는 아무것도 추가되지 않는다.
-    private void TestConnection()
-    {
-        var url = this.Config.SheetUrl;
-        this.testing = true;
-        this.sheetMessage = "";
-        Task.Run(async () =>
-        {
-            var res = await SheetExporter.SendAsync(url, Array.Empty<object[]>());
-            await Plugin.Framework.RunOnFrameworkThread(() =>
-            {
-                this.testing = false;
-                this.sheetMessage = res.Ok ? "연결되었습니다. 기록을 선택하고 '시트로 내보내기'를 누르면 됩니다." : res.Error ?? "연결하지 못했습니다.";
-                this.sheetMessageIsError = !res.Ok;
-            });
-        });
-    }
-
     private void OpenSheetConnect(string message, bool isError)
     {
         this.sheetUrlBuffer = this.Config.SheetUrl;
@@ -620,16 +601,13 @@ public sealed class MainWindow : Window
                 this.Config.SheetUrl = SheetExporter.Normalize(this.sheetUrlBuffer);
                 this.sheetUrlBuffer = this.Config.SheetUrl;
                 this.Config.Save();
-                this.sheetMessage = "저장했습니다. '연결 테스트'로 확인해보세요.";
+                this.sheetMessage = "저장했습니다. 기록을 선택하고 '시트로 내보내기'를 누르면 됩니다.";
                 this.sheetMessageIsError = false;
             }
         }
 
         if (this.Config.SheetUrl.Length > 0)
         {
-            ImGui.SameLine();
-            if (ImGui.Button(this.testing ? "확인 중…" : "연결 테스트") && !this.testing) this.TestConnection();
-
             ImGui.SameLine();
             if (ImGui.Button("연결 해제"))
             {
